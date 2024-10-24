@@ -9,14 +9,15 @@ APP_ID = 'my_ctct_app'
 # change this to point your ini file (absolute path required)
 #CONF_FILE="/home/me/.access/constant_contact.ini"
 # otherwise we'll find it by looking under `conf/` in this package.
-CONF_FILE="constant_contact.ini"
+CONF_FILE="/Users/jeremywood/constant_contact-1/sample_conf/constant_contact.ini"
 
-CODE_REQUEST=( "https://api.cc.email/v3/idfed?response_type=code&client_id={}"
-               "&scope=contact_data&redirect_uri=https%3A%2F%2Flocalhost" )
+CODE_REQUEST=( "https://authz.constantcontact.com/oauth2/default/v1/authorize"
+         "?response_type=code&client_id={}"
+         "&scope=contact_data&redirect_uri=https%3A%2F%2Flocalhost" )
 
-TOKEN_REQUEST=( "https://idfed.constantcontact.com/as/token.oauth2?code={}"
-                "&redirect_uri=https%3A%2F%2Flocalhost&"
-                "grant_type=authorization_code" )
+TOKEN_REQUEST=( "https://authz.constantcontact.com/oauth2/default/v1/token"
+        "?code={}&redirect_uri=https%3A%2F%2Flocalhost"
+        "&grant_type=authorization_code" )
 
 
 base_dirs = FindDir()
