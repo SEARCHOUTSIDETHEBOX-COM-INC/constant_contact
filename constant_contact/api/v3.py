@@ -1,128 +1,84 @@
-#!/usr/bin/env python
+import time
+import requests
 
-from constant_contact.config.find_dir import FindDir
-from configparser import ConfigParser
+# Function to refresh the access token with retries and exponential backoff
+def refresh_access_token_with_retry(refresh_token, client_id, client_secret, max_retries=5):
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
 
-import fcntl, requests, sys, time
+    data = {
+        'refresh_token': refresh_token,
+        'grant_type': 'refresh_token',
+        'client_id': client_id,
+        'client_secret': client_secret
+    }
 
-class ConstantContact(object):
+    token_url = "https://authz.constantcontact.com/oauth2/default/v1/token"
+    retries = 0
 
-    base_url  = 'https://api.cc.email/v3/'
+    while retries < max_retries:
+        try:
+            res = requests.post(token_url, headers=headers, data=data, timeout=30)  # Timeout added
+            if res.status_code == 200:
+                return res.json()  # Return the refreshed token
+            else:
+                print(f"Failed to refresh token: {res.status_code} {res.text}")
+                return None
+        except requests.exceptions.ConnectTimeout:
+            retries += 1
+            wait_time = 2 ** retries  # Exponential backoff
+            print(f"Connection timeout. Retrying in {wait_time} seconds...")
+            time.sleep(wait_time)
 
-    # replace {} with refresh_token
-    token_url = ( "https://idfed.constantcontact.com/as/token.oauth2"
-                  "?refresh_token={}&grant_type=refresh_token" )
-    conf_file = 'constant_contact.ini'
+    print(f"Failed to refresh token after {max_retries} attempts.")
+    return None
 
-    app_id = None
-    conf = None # becomes a ConfigParser object
 
-    def __init__( self, app_id=None, conf_file=None ):
+# Define the ConstantContact class
+class ConstantContact:
+    def __init__(self, access_token, refresh_token, client_id, client_secret):
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.client_id = client_id
+        self.client_secret = client_secret
 
-        if app_id is None:
-            raise AttributeError(
-              "app_id must match section heading in conf file"
+    # Function to get contacts from Constant Contact API
+    def get_contacts(self):
+        url = "https://api.cc.email/v3/contacts"
+        return self.request(url)
+
+    # General function to make API requests
+    def request(self, url, method="GET", data=None):
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        # Make the API request
+        if method == "GET":
+            response = requests.get(url, headers=headers)
+        elif method == "POST":
+            response = requests.post(url, headers=headers, data=data)
+
+        # Check for 401 response (Unauthorized) and attempt token refresh
+        if response.status_code == 401:  # Unauthorized, attempt to refresh the token
+            print("401 response = refreshing token")
+            new_tokens = refresh_access_token_with_retry(
+                refresh_token=self.refresh_token,
+                client_id=self.client_id,
+                client_secret=self.client_secret
             )
 
-        self.app_id = app_id
+            if new_tokens:
+                # Update the access token and refresh token if available
+                self.access_token = new_tokens['access_token']
+                self.refresh_token = new_tokens.get('refresh_token', self.refresh_token)
 
-        if conf_file is not None:
-            self.conf_file = conf_file
+                # Retry the original request with the new access token
+                headers = {"Authorization": f"Bearer {self.access_token}"}
+                if method == "GET":
+                    response = requests.get(url, headers=headers)
+                elif method == "POST":
+                    response = requests.post(url, headers=headers, data=data)
 
-        self._populate_config()
-
-    def _populate_config(self, write=False):
-
-        base_dirs = FindDir()
-        cp = ConfigParser()
-
-        conf_filename = base_dirs.conf_dir + self.conf_file
-
-        if write:
-            with open(conf_filename, 'w') as configfile:
-                locked = False
-
-                for x in range(30):
-                    try:
-                        fcntl.flock(configfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        locked = True
-                        break
-                    except OSError as e:
-                        if sys.stdout.isatty(): # interactive
-                            print("File Lock: {} - retrying...".format(e))
-
-                    time.sleep(1)
-
-                if locked:
-                    self.conf.write(configfile)
-                    fcntl.flock(configfile, fcntl.LOCK_UN)
-                else:
-                    raise OSError("Unable to establish lock on config file")
-        else:
-            cp.read(conf_filename)
-            self.conf = cp
-
-    def refresh_token(self):
-
-        token_url = self.token_url.format(
-          self.conf[self.app_id]['refresh_token']
-        )
-        res = requests.post(token_url,
-          auth=(
-            self.conf[self.app_id]['api_key'],
-            self.conf[self.app_id]['app_secret']
-          )
-        )
-
-        if res.status_code == 200:
-            tokens = res.json()
-            self.conf[self.app_id]["access_token"] = tokens['access_token']
-            self.conf[self.app_id]["refresh_token"] = tokens['refresh_token']
-            self._populate_config(True)
-        else:
-            if sys.stdout.isatty(): # interactive
-                print("error trying to refresh token...")
-            res.raise_for_status()
-
-    def request(self, url=None, params=None, method="get", retry=True):
-
-        if url is None:
-            raise AttributeError("URL is empty when calling request()")
-
-        headers = {
-          'Accept': "application/json",
-          'Content-Type': "application/json",
-          'Authorization': "Bearer " + self.conf[self.app_id]['access_token']
-        }
-
-        if method == "post":
-            res = requests.post(self.base_url + url, data=params, headers=headers)
-        else:
-            res = requests.request(method, self.base_url + url, params=params, headers=headers)
-
-        if res.status_code == 401:
-            if sys.stdout.isatty():
-                print("401 response = refreshing token")
-            self.refresh_token()
-            if retry: # we'll retry once
-                self.request(url, params, method, False)
-
-        return res.json()
-
-    def get_contacts(self):
-
-        return self.request(
-          '/contacts',
-          { "status": "all", "include_count": "true" }
-        )
-
-
-
-if __name__ ==  "__main__":
-
-    app_id = 'my_ctct_app'
-
-    cc = ConstantContact(app_id)
-    import pprint
-    pprint.pprint(cc.get_contacts())
-
+        # Return the response or None if the status code is not 200
+        return response.json() if response.status_code == 200 else None
